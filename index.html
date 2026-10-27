@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pixel Court</title>
+<meta name="description" content="Live 8-bit NBA scores, box scores, shot charts and players to watch, in your own timezone.">
+<meta name="theme-color" content="#0d0b1f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pixel Court">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="brand" href="#" aria-label="Pixel Court home">
+      <canvas id="ball" width="10" height="14" aria-hidden="true"></canvas>
+      <span class="logo">PIXEL<b>COURT</b></span>
+    </a>
+    <div class="top-right">
+      <span id="live-pill" class="live-pill" hidden>LIVE</span>
+      <button class="icon-btn" id="btn-settings" aria-label="Settings">⚙</button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Sections">
+    <a href="#" id="nav-games" class="tab">GAMES</a>
+    <a href="#standings" id="nav-standings" class="tab">STANDINGS</a>
+  </nav>
+
+  <main id="view" aria-live="polite"></main>
+
+  <footer class="foot">
+    <span id="updated">—</span>
+    <span>Data: ESPN · times in <span id="tzname"></span></span>
+  </footer>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" class="sheet">
+    <h2 class="px">SETTINGS</h2>
+    <label class="field" for="fav">FAVORITE TEAM
+      <select id="fav"><option value="">None</option></select>
+    </label>
+    <label class="toggle" for="opt-spoil"><input type="checkbox" id="opt-spoil"> <span>Spoiler shield: hide scores until I tap</span></label>
+    <label class="toggle" for="opt-notify"><input type="checkbox" id="opt-notify"> <span>Alerts while the app is open: close games and finals</span></label>
+    <label class="toggle" for="opt-sound"><input type="checkbox" id="opt-sound"> <span>8-bit sounds</span></label>
+    <p class="hint">Add Pixel Court to your home screen: Share ▸ Add to Home Screen (iPhone) or ⋮ ▸ Install app (Android).</p>
+    <button class="btn" value="close">DONE</button>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
