@@ -1,4 +1,4 @@
-name: Morning WhatsApp recap
+name: Morning NBA recap
 
 on:
   schedule:
@@ -15,6 +15,8 @@ jobs:
           python-version: "3.12"
       - name: Send recap
         env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
-        run: python scripts/whatsapp_recap.py
+        run: python scripts/morning_recap.py

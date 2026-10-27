@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Morning NBA recap sent to WhatsApp via CallMeBot.
+"""Morning NBA recap sent to Telegram (or WhatsApp via CallMeBot, if configured).
 
-Env: WHATSAPP_PHONE (international format, e.g. +9725XXXXXXXX), CALLMEBOT_APIKEY.
-Without them (or with --dry-run) it just prints the message.
+Env: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID, and/or WHATSAPP_PHONE + CALLMEBOT_APIKEY.
+Without any (or with --dry-run) it just prints the message.
 """
-import json, os, subprocess, sys, urllib.parse, urllib.request
+import html, json, os, re, subprocess, sys, urllib.parse, urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -14,13 +14,17 @@ API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?d
 APP = "https://noamadept.github.io/pixel-court/"
 
 
-def get(url):
+def get(url, data=None):
     try:
-        with urllib.request.urlopen(url, timeout=20) as r:
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
+        with urllib.request.urlopen(req, timeout=20) as r:
             return r.read()
+    except urllib.error.HTTPError as e:
+        return e.read()
     except urllib.error.URLError:
         # python.org builds on macOS ship without CA certs; curl uses the system store.
-        return subprocess.run(["curl", "-sf", "--max-time", "20", url], capture_output=True, check=True).stdout
+        cmd = ["curl", "-s", "--max-time", "20", url] + (["-H", "Content-Type: application/json", "-d", data.decode()] if data else [])
+        return subprocess.run(cmd, capture_output=True, check=True).stdout
 
 
 def events(day):
@@ -103,7 +107,30 @@ def build():
     return "\n".join(out)
 
 
-def send(text):
+def to_html(text):
+    """WhatsApp-style markup (*bold*, ```pre```) -> Telegram HTML."""
+    parts = text.split("```")
+    out = []
+    for i, part in enumerate(parts):
+        part = html.escape(part, quote=False)
+        out.append(f"<pre>{part.strip(chr(10))}</pre>" if i % 2 else re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", part))
+    return "".join(out)
+
+
+def send_telegram(text):
+    token, chat = os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+    body = json.dumps({
+        "chat_id": chat, "text": to_html(text.replace(f"\n👾 Box scores & shot charts: {APP}", "")), "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "reply_markup": {"inline_keyboard": [[{"text": "👾 OPEN PIXEL COURT", "url": APP}]]},
+    }).encode()
+    res = json.loads(get(f"https://api.telegram.org/bot{token}/sendMessage", body) or b"{}")
+    if not res.get("ok"):
+        sys.exit(f"Telegram rejected the message: {res.get('description')}")
+    print("Sent to Telegram")
+
+
+def send_whatsapp(text):
     phone, key = os.environ.get("WHATSAPP_PHONE"), os.environ.get("CALLMEBOT_APIKEY")
     q = urllib.parse.urlencode({"phone": phone, "text": text, "apikey": key})
     body = get("https://api.callmebot.com/whatsapp.php?" + q).decode("utf-8", "replace")
@@ -115,5 +142,9 @@ def send(text):
 if __name__ == "__main__":
     msg = build()
     print(msg)
-    if "--dry-run" not in sys.argv and os.environ.get("CALLMEBOT_APIKEY"):
-        send(msg)
+    if "--dry-run" in sys.argv:
+        sys.exit()
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        send_telegram(msg)
+    if os.environ.get("CALLMEBOT_APIKEY") and os.environ.get("WHATSAPP_PHONE"):
+        send_whatsapp(msg)
