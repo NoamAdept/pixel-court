@@ -3,6 +3,7 @@
 
 const API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba";
 const STANDINGS = "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings";
+const VAPID_PUBLIC = "BE_cbsIf7U-d3k0xuglLc8jGkV22yghc2Hme0-l9VsPd8Y6kBTQ2wQNwXerVe7lrlZq4b0pbLx_KQXyCPts-ymU";
 const LIVE_POLL = 20000, DETAIL_POLL = 15000, IDLE_POLL = 300000;
 
 /* ---------- tiny helpers ---------- */
@@ -592,6 +593,8 @@ async function openSettings() {
   document.getElementById("opt-notify").checked = settings.notify;
   document.getElementById("opt-sound").checked = settings.sound;
   dlg.showModal();
+  refreshPushUI().catch(() => {});
+  if (location.hash === "#push") enablePush();
   if (fav.options.length <= 1) {
     try {
       const s = standingsData || await loadStandings();
@@ -615,6 +618,45 @@ function bindSettings() {
     store.set("notify", settings.notify);
   };
   document.getElementById("settings").addEventListener("close", () => route());
+  document.getElementById("btn-push").onclick = enablePush;
+  document.getElementById("btn-copy").onclick = copyPushCode;
+}
+
+/* ---------- morning push (web push; the daily GitHub Action is the sender) ---------- */
+function b64ToBytes(s) { const p = "=".repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, c => c.charCodeAt(0)); }
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+function showPushCode(sub) {
+  const code = btoa(JSON.stringify(sub.toJSON ? sub.toJSON() : sub));
+  document.getElementById("push-code").value = code;
+  document.getElementById("push-code-wrap").hidden = false;
+}
+async function refreshPushUI() {
+  const st = document.getElementById("push-status"), btn = document.getElementById("btn-push");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    st.textContent = isIOS && !standalone ? "On iPhone, first add Pixel Court to your Home Screen, then open it from there and come back here." : "This browser doesn't support push notifications.";
+    btn.hidden = true; return;
+  }
+  const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+  btn.hidden = false;
+  btn.textContent = sub ? "SHOW MY PUSH CODE" : "TURN ON MORNING PUSH";
+  if (sub && store.get("pushLinked", false)) st.textContent = "Morning push is on for this phone.";
+}
+async function enablePush() {
+  const st = document.getElementById("push-status");
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { st.textContent = "Notifications are blocked. Allow them for Pixel Court in your phone's settings, then try again."; return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(VAPID_PUBLIC) });
+    showPushCode(sub); beep(SFX.coin);
+    st.textContent = "Push is ready on this phone. Send the code below to finish.";
+  } catch (err) { st.textContent = "Couldn't turn on push: " + err.message; }
+}
+async function copyPushCode() {
+  const t = document.getElementById("push-code");
+  try { await navigator.clipboard.writeText(t.value); toast("Code copied"); } catch { t.select(); toast("Select the code and copy it"); }
+  store.set("pushLinked", true);
 }
 
 /* ---------- boot ---------- */

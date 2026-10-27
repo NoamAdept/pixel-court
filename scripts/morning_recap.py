@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Morning NBA recap sent to Telegram (or WhatsApp via CallMeBot, if configured).
+"""Morning NBA recap, sent as a web push notification to every phone that turned on
+"Morning push" in the Pixel Court app. No third-party messaging service involved.
 
-Env: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID, and/or WHATSAPP_PHONE + CALLMEBOT_APIKEY.
-Without any (or with --dry-run) it just prints the message.
+Env: VAPID_PRIVATE_KEY (base64url raw P-256 key), PUSH_SUBSCRIPTIONS (one or more push codes
+from the app, separated by commas/newlines). With --dry-run, or without them, it only prints.
 """
-import html, json, os, re, subprocess, sys, urllib.parse, urllib.request
+import base64, json, os, re, subprocess, sys, urllib.error, urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -14,17 +15,13 @@ API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?d
 APP = "https://noamadept.github.io/pixel-court/"
 
 
-def get(url, data=None):
+def get(url):
     try:
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(url, timeout=20) as r:
             return r.read()
-    except urllib.error.HTTPError as e:
-        return e.read()
     except urllib.error.URLError:
         # python.org builds on macOS ship without CA certs; curl uses the system store.
-        cmd = ["curl", "-s", "--max-time", "20", url] + (["-H", "Content-Type: application/json", "-d", data.decode()] if data else [])
-        return subprocess.run(cmd, capture_output=True, check=True).stdout
+        return subprocess.run(["curl", "-sf", "--max-time", "20", url], capture_output=True, check=True).stdout
 
 
 def events(day):
@@ -48,103 +45,85 @@ def leader(t, name):
 
 def game(e):
     c = e["competitions"][0]
-    home = team(next(x for x in c["competitors"] if x["homeAway"] == "home"))
-    away = team(next(x for x in c["competitors"] if x["homeAway"] == "away"))
-    hl = next((h for h in c.get("headlines", []) if h.get("type") == "Recap"), None)
-    return {"home": home, "away": away, "start": datetime.fromisoformat(e["date"].replace("Z", "+00:00")).astimezone(LOCAL),
-            "headline": (hl or {}).get("shortLinkText", ""), "state": e["status"]["type"]["state"],
-            "tv": sorted({n for b in c.get("broadcasts", []) for n in b.get("names", [])})}
+    return {"home": team(next(x for x in c["competitors"] if x["homeAway"] == "home")),
+            "away": team(next(x for x in c["competitors"] if x["homeAway"] == "away")),
+            "start": datetime.fromisoformat(e["date"].replace("Z", "+00:00")).astimezone(LOCAL)}
+
+
+def last_name(n):
+    return n.split(" ", 1)[-1] if " " in n else n
 
 
 def build():
     today = datetime.now(ET).date()
-    finals, slate = [], []
+    finals, slate, recap_day = [], [], None
     for back in range(0, 4):
-        finals = [game(e) for e in events(today - timedelta(days=back)) if e["status"]["type"]["state"] == "post"]
+        d = today - timedelta(days=back)
+        finals = [game(e) for e in events(d) if e["status"]["type"]["state"] == "post"]
         if finals:
+            recap_day = d
             break
     for fwd in range(0, 5):
         slate = [game(e) for e in events(today + timedelta(days=fwd)) if e["status"]["type"]["state"] == "pre"]
         if slate:
             break
 
-    out = ["🏀 *PIXEL COURT · MORNING RECAP*", ""]
+    title, lines = "🏀 Pixel Court", []
     if finals:
-        margin = lambda g: abs(g["home"]["score"] - g["away"]["score"]) - (6 if g["home"]["ot"] else 0)
-        finals.sort(key=margin)
         star = max(((leader(t, "points"), t["abbr"]) for g in finals for t in (g["away"], g["home"]) if leader(t, "points")),
                    key=lambda s: s[0][2], default=None)
         if star:
-            out.append(f"⭐ *MVP:* {star[0][0]} ({star[1]}) {star[0][1]} PTS")
-        g = finals[0]
-        out.append(f"⚡ *Clutch:* {g['away']['abbr']} {g['away']['score']}-{g['home']['score']} {g['home']['abbr']}" + (" (OT)" if g["home"]["ot"] else ""))
-        out += ["", "*LAST NIGHT*", "```"]
-        for g in finals:
-            a, h = g["away"], g["home"]
-            mark = lambda t: "◀" if t["winner"] else " "
-            out.append(f"{a['abbr']:<4}{a['score']:>4}{mark(a)} {h['abbr']:<4}{h['score']:>4}{mark(h)}{' OT' if h['ot'] else ''}")
-        out.append("```")
-        for g in finals[:3]:
-            if g["headline"]:
-                out.append(f"• {g['headline']}")
+            title = f"🏀 MVP: {star[0][0]} {star[0][1]} PTS ({star[1]})"
+        g = min(finals, key=lambda g: abs(g["home"]["score"] - g["away"]["score"]) - (6 if g["home"]["ot"] else 0))
+        lines.append(f"⚡ Clutch: {g['away']['abbr']} {g['away']['score']}-{g['home']['score']} {g['home']['abbr']}" + (" OT" if g["home"]["ot"] else ""))
     else:
-        out.append("No games last night.")
-
+        lines.append("No games last night.")
     if slate:
-        out += ["", f"*TONIGHT* ({slate[0]['start'].strftime('%a %d %b')}, Israel time)", "```"]
-        for g in sorted(slate, key=lambda g: g["start"]):
-            out.append(f"{g['start'].strftime('%H:%M')}  {g['away']['abbr']} @ {g['home']['abbr']}")
-        out.append("```")
-        hype = lambda g: sum(int(r.split('-')[0]) / max(1, sum(map(int, r.split('-')))) for r in (g["home"]["record"], g["away"]["record"]) if '-' in r)
-        must = max(slate, key=hype)
-        out.append(f"📺 *Must watch:* {must['away']['abbr']} @ {must['home']['abbr']} {must['start'].strftime('%H:%M')}" + (f" on {', '.join(must['tv'][:2])}" if must["tv"] else ""))
-        watch = sorted(((leader(t, "pointsPerGame"), t["abbr"], g["start"]) for g in slate for t in (g["away"], g["home"]) if leader(t, "pointsPerGame")),
-                       key=lambda w: -w[0][2])[:4]
+        first = min(slate, key=lambda g: g["start"])
+        watch = max(((leader(t, "pointsPerGame"), t["abbr"], g) for g in slate for t in (g["away"], g["home"]) if leader(t, "pointsPerGame")),
+                    key=lambda w: w[0][2], default=None)
+        tonight = f"🌙 Tonight: {len(slate)} game{'s' if len(slate) > 1 else ''} from {first['start'].strftime('%H:%M')}"
         if watch:
-            out += ["", "*PLAYERS TO WATCH*"]
-            out += [f"• {w[0][0]} ({w[1]}) {float(w[0][1]):.1f} PPG · {w[2].strftime('%H:%M')}" for w in watch]
-    out += ["", f"👾 Box scores & shot charts: {APP}"]
-    return "\n".join(out)
+            g = watch[2]
+            tonight += f" · watch {last_name(watch[0][0])} ({watch[0][1]} PPG) {g['away']['abbr']}@{g['home']['abbr']} {g['start'].strftime('%H:%M')}"
+        lines.append(tonight)
+    if finals:
+        lines.append("Finals: " + "  ".join(f"{g['away']['abbr']} {g['away']['score']}-{g['home']['score']} {g['home']['abbr']}" for g in finals))
+    url = APP + (f"#d/{recap_day.strftime('%Y%m%d')}" if recap_day else "")
+    return {"title": title, "body": "\n".join(lines), "url": url}
 
 
-def to_html(text):
-    """WhatsApp-style markup (*bold*, ```pre```) -> Telegram HTML."""
-    parts = text.split("```")
-    out = []
-    for i, part in enumerate(parts):
-        part = html.escape(part, quote=False)
-        out.append(f"<pre>{part.strip(chr(10))}</pre>" if i % 2 else re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", part))
-    return "".join(out)
+def subscriptions():
+    raw = os.environ.get("PUSH_SUBSCRIPTIONS", "")
+    subs = []
+    for code in re.split(r"[\s,]+", raw.strip()):
+        if code:
+            subs.append(json.loads(base64.b64decode(code + "=" * (-len(code) % 4))))
+    return subs
 
 
-def send_telegram(text):
-    token, chat = os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
-    body = json.dumps({
-        "chat_id": chat, "text": to_html(text.replace(f"\n👾 Box scores & shot charts: {APP}", "")), "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-        "reply_markup": {"inline_keyboard": [[{"text": "👾 OPEN PIXEL COURT", "url": APP}]]},
-    }).encode()
-    res = json.loads(get(f"https://api.telegram.org/bot{token}/sendMessage", body) or b"{}")
-    if not res.get("ok"):
-        sys.exit(f"Telegram rejected the message: {res.get('description')}")
-    print("Sent to Telegram")
-
-
-def send_whatsapp(text):
-    phone, key = os.environ.get("WHATSAPP_PHONE"), os.environ.get("CALLMEBOT_APIKEY")
-    q = urllib.parse.urlencode({"phone": phone, "text": text, "apikey": key})
-    body = get("https://api.callmebot.com/whatsapp.php?" + q).decode("utf-8", "replace")
-    print(body[:300])
-    if "error" in body.lower() and "queued" not in body.lower():
-        sys.exit("CallMeBot rejected the message")
+def send(payload):
+    from pywebpush import webpush, WebPushException
+    from py_vapid import Vapid
+    key, subs = os.environ["VAPID_PRIVATE_KEY"], subscriptions()
+    Vapid.from_string(key)  # fail loudly on a bad key before touching any device
+    if not subs:
+        sys.exit("No PUSH_SUBSCRIPTIONS saved yet: turn on Morning push in the app first.")
+    ok = 0
+    for s in subs:
+        try:
+            webpush(subscription_info=s, data=json.dumps(payload), vapid_private_key=key,
+                    vapid_claims={"sub": "https://github.com/NoamAdept/pixel-court"}, ttl=6 * 3600)
+            ok += 1
+        except WebPushException as e:
+            print("Push failed:", getattr(e.response, "status_code", ""), str(e)[:200])
+    print(f"Sent to {ok}/{len(subs)} device(s)")
+    if not ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    msg = build()
-    print(msg)
-    if "--dry-run" in sys.argv:
-        sys.exit()
-    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
-        send_telegram(msg)
-    if os.environ.get("CALLMEBOT_APIKEY") and os.environ.get("WHATSAPP_PHONE"):
-        send_whatsapp(msg)
+    p = build()
+    print(p["title"], p["body"], p["url"], sep="\n")
+    if "--dry-run" not in sys.argv and os.environ.get("VAPID_PRIVATE_KEY"):
+        send(p)
